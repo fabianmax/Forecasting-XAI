@@ -1,7 +1,7 @@
 
 # Data Loading ------------------------------------------------------------
 
-df <- fread("~/Desktop/norway_new_car_sales_by_make.csv")
+df <- fread("norway_new_car_sales_by_make.csv")
 
 
 # Data preparation --------------------------------------------------------

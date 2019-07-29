@@ -1,0 +1,180 @@
+---
+title: "Showcase Forecasting Explainability"
+author: "Fabian Müller"
+date: "2019-08-01"
+output: 
+  html_document:
+    code_folding: hide
+---
+
+```{r setup, include=FALSE, echo=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      fig.height = 8,
+                      fig.width = 12,
+                      warning = FALSE)
+
+# Source libs
+source("setup.R")
+```
+
+# Data Loading
+
+```{r Data Loading}
+# Data loading
+df <- fread("norway_new_car_sales_by_make.csv")
+
+# Data preparation
+df <- df %>% 
+  dplyr::filter(Make == "Mercedes-Benz" | Make == "BMW") %>% 
+  dplyr::mutate(Make = case_when(Make == "Mercedes-Benz" ~ "Mercedes",
+                                 TRUE ~ Make)) %>% 
+  dplyr::mutate(Date = ymd(paste(Year, Month, "01", sep = "-"))) %>% 
+  dplyr::select(Date, Quantity, Make) %>% 
+  dcast(., Date ~ Make, value.var = "Quantity")
+
+names(df) <- tolower(names(df))
+
+DT::datatable(df,
+              options = list(dom = "tp"))
+```
+
+# Data Visualization
+
+```{r Data Visualization}
+
+# Visualize time-series
+p <- df %>% 
+  melt(id.vars = "date") %>% 
+  ggplot(aes(x = date, y = value, color = variable)) + 
+    geom_line() + 
+    geom_point() + 
+    scale_color_discrete("", labels = c("BMW", "Mercedes-Benz")) + 
+    theme_minimal() + 
+    labs(x = "Date", y = "Sales", title = "New Car Sales in Norway since 2007") + 
+    theme(legend.position = "bottom")
+
+ggplotly(p)
+```
+
+# Feature Engineering
+
+```{r Feature Engineering}
+# Feature engineering
+df_mod <- df %>% 
+  dplyr::mutate(mb_lag_1 = dplyr::lag(mercedes, 1),
+                mb_lag_2 = dplyr::lag(mercedes, 2),
+                mb_lag_3 = dplyr::lag(mercedes, 3),
+                bmw_lag_1 = dplyr::lag(bmw, 1),
+                bmw_lag_2 = dplyr::lag(bmw, 2),
+                bmw_lag_3 = dplyr::lag(bmw, 3),
+                trend = 1:n(),
+                seasonal_q1 = ifelse(lubridate::month(date) %in% c(1, 2, 3), 1, 0),
+                seasonal_q2 = ifelse(lubridate::month(date) %in% c(4, 5, 6), 1, 0),
+                seasonal_q3 = ifelse(lubridate::month(date) %in% c(7, 8, 9), 1, 0),
+                seasonal_q4 = ifelse(lubridate::month(date) %in% c(10, 11, 12), 1, 0)) %>% 
+  remove_missing(.)
+
+# Training and test sets
+df_train <- df_mod %>% 
+  dplyr::filter(date <= ymd("2016-12-01"))
+
+df_test <- df_mod %>% 
+  dplyr::filter(date == ymd("2017-01-01"))
+
+glimpse(df_train)
+```
+
+# Model Training
+
+```{r Train VAR}
+# Model formula
+form <- mercedes ~ mb_lag_1 + mb_lag_2 + mb_lag_3 + 
+  bmw_lag_1 + bmw_lag_2 + bmw_lag_3 + 
+  trend + 
+  seasonal_q1 + seasonal_q2 + seasonal_q3
+
+# Train VAR model
+mod_var <- vars::VAR(y = df_train[, c("mercedes", "bmw")], 
+                     p = 3,
+                     type = "trend",
+                     season = 4)
+
+mod_var
+```
+
+
+```{r Model Train RF}
+# Train Random Forest via caret
+mod_rf <- caret::train(form = form,
+                       data = df_train,
+                       method = "rf",
+                       trControl = trainControl(method = "none"))
+
+mod_rf
+```
+
+
+```{r Model Train XGB}
+# Train XGBoost
+mod_xgb <- train_xgb(form = form,
+                     .data = df_train)
+
+mod_xgb
+```
+
+# Model Explanation
+
+```{r Model Explanation I}
+
+# Features from formula
+features <- labels(terms(form))
+features <- unlist(strsplit(features, ":"))
+
+# Create training and explaining data.frames
+X_train <- df_train[, features]
+X_plain <- df_test[, features]
+
+# DALEX explainer for random forest
+explainer_rf <- DALEX::explain(model = mod_rf, 
+                               data = X_train,
+                               y = df_train$mercedes,
+                               predict_function = function(model, newdata) {
+                                 predict.train(model, newdata = newdata)
+                               })
+
+# DALEX explainer for XGBoost model
+explainer_xgb <- DALEX::explain(model = mod_xgb,
+                                data = X_train,
+                                y = df_train$mercedes)
+
+# Explainer for VAR model
+
+# Extract linear models form estimated var obj
+mod_var_1 <- mod_var$varresult$mercedes
+mod_var_2 <- mod_var$varresult$bmw
+
+# Extract training and explaining data.frames from varest obj
+X_train <- mod_var$datamat
+X_plain <- create_Z_varest(mod_var)
+
+# Explainer for VAR equation 1
+explainer_var_1 <- DALEX::explain(model = mod_var_1,
+                                  data = X_train,
+                                  predict_function = predict.lm)
+
+# Explainer for VAR equation 2
+explainer_var_2 <- DALEX::explain(model = mod_var_2,
+                                  data = X_train,
+                                  predict_function = predict.lm)
+
+```
+
+
+## Global Model Explanation
+
+## Local Model Explanation
+
+
+
+
+
