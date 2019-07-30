@@ -25,25 +25,22 @@ train_xgb <- function(form, .data, ...) {
                             nround = 100)
 
   # Return fitted obj
-  return(mod)
+  return(list(mod = mod,
+              target = target,
+              features = features))
 }
 
 
 predict_xgb <- function(model, newdata) {
-  
-  # Only select features which are relevant for estimation
-  X <- .data_new %>%
-    ungroup() %>%   
-    #na.omit() %>%
-    select(!!features) 
-  
-  
-  y <- X %>% select(savings_perc)
-  X <- X %>% select(-savings_perc)
+
+  # Feature matrix
+  X_new <- newdata %>% dplyr::select(!!model$features)
   
   # Create matrix required by xgboost
-  data_new_matrix <- xgb.DMatrix(data = as.matrix(X), label = as.matrix(y))
+  data_new_matrix <- xgb.DMatrix(data = as.matrix(X_new))
   
-  pred <- predict(model, data_new_matrix)
+  pred <- predict(model$mod, data_new_matrix)
+  
   return(pred)
 }
+

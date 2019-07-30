@@ -1,6 +1,6 @@
 ---
 title: "Showcase Forecasting Explainability"
-author: "Fabian Müller"
+author: "Fabian Müller | STATWORX"
 date: "2019-08-01"
 output: 
   html_document:
@@ -15,9 +15,22 @@ knitr::opts_chunk$set(echo = TRUE,
 
 # Source libs
 source("setup.R")
+
+# Simple MAPE function
+mape <- function(observed, predicted) {
+  mean(abs(observed - predicted) / observed)
+}
+
+# CI colors
+col_palette <- dci_palette()
 ```
 
 # Data Loading
+
+![](ressources/kaggle.png)   
+
+<br>
+As an example, we used the [New Car Sales in Norway](https://www.kaggle.com/dmi3kno/newcarsalesnorway) dataset from Kaggle.
 
 ```{r Data Loading}
 # Data loading
@@ -48,7 +61,9 @@ p <- df %>%
   ggplot(aes(x = date, y = value, color = variable)) + 
     geom_line() + 
     geom_point() + 
-    scale_color_discrete("", labels = c("BMW", "Mercedes-Benz")) + 
+    scale_color_manual("", 
+                         values = c(col_palette[2], col_palette[1]),
+                         labels = c("BMW", "Mercedes-Benz")) + 
     theme_minimal() + 
     labs(x = "Date", y = "Sales", title = "New Car Sales in Norway since 2007") + 
     theme(legend.position = "bottom")
@@ -58,20 +73,25 @@ ggplotly(p)
 
 # Feature Engineering
 
+In order to make the machine learning models comparable to Vectorautoregression, we limited feature engineering to the following features:   
+- Lags (order 1 to 3)   
+- Linear trend (1, 2, ..., n)   
+- Seasonal dummies (one-hot encoded)
+
 ```{r Feature Engineering}
 # Feature engineering
 df_mod <- df %>% 
-  dplyr::mutate(mb_lag_1 = dplyr::lag(mercedes, 1),
-                mb_lag_2 = dplyr::lag(mercedes, 2),
-                mb_lag_3 = dplyr::lag(mercedes, 3),
-                bmw_lag_1 = dplyr::lag(bmw, 1),
-                bmw_lag_2 = dplyr::lag(bmw, 2),
-                bmw_lag_3 = dplyr::lag(bmw, 3),
+  dplyr::mutate(mercedes.l1 = dplyr::lag(mercedes, 1),
+                mercedes.l2 = dplyr::lag(mercedes, 2),
+                mercedes.l3 = dplyr::lag(mercedes, 3),
+                bmw.l1 = dplyr::lag(bmw, 1),
+                bmw.l2 = dplyr::lag(bmw, 2),
+                bmw.l3 = dplyr::lag(bmw, 3),
                 trend = 1:n(),
-                seasonal_q1 = ifelse(lubridate::month(date) %in% c(1, 2, 3), 1, 0),
-                seasonal_q2 = ifelse(lubridate::month(date) %in% c(4, 5, 6), 1, 0),
-                seasonal_q3 = ifelse(lubridate::month(date) %in% c(7, 8, 9), 1, 0),
-                seasonal_q4 = ifelse(lubridate::month(date) %in% c(10, 11, 12), 1, 0)) %>% 
+                sd1 = ifelse(lubridate::month(date) %in% c(1, 2, 3), 1, 0),
+                sd2 = ifelse(lubridate::month(date) %in% c(4, 5, 6), 1, 0),
+                sd3 = ifelse(lubridate::month(date) %in% c(7, 8, 9), 1, 0),
+                sd4 = ifelse(lubridate::month(date) %in% c(10, 11, 12), 1, 0)) %>% 
   remove_missing(.)
 
 # Training and test sets
@@ -88,10 +108,10 @@ glimpse(df_train)
 
 ```{r Train VAR}
 # Model formula
-form <- mercedes ~ mb_lag_1 + mb_lag_2 + mb_lag_3 + 
-  bmw_lag_1 + bmw_lag_2 + bmw_lag_3 + 
+form <- mercedes ~ mercedes.l1 + mercedes.l2 + mercedes.l3 + 
+  bmw.l1 + bmw.l2 + bmw.l3 + 
   trend + 
-  seasonal_q1 + seasonal_q2 + seasonal_q3
+  sd1 + sd2 + sd3
 
 # Train VAR model
 mod_var <- vars::VAR(y = df_train[, c("mercedes", "bmw")], 
@@ -119,8 +139,46 @@ mod_rf
 mod_xgb <- train_xgb(form = form,
                      .data = df_train)
 
-mod_xgb
+mod_xgb$mod
 ```
+
+
+```{r}
+
+p_var <- predict(mod_var, n.ahead = 1)$fcst$mercedes[1, 1]
+p_rf <- predict(mod_rf, newdata = df_test)
+p_xgb <- predict_xgb(mod_xgb, newdata = df_test)
+
+
+predictions <- tibble(date = df_test$date,
+                      model = c("var", "rf", "xgb"),
+                      p = c(p_var, p_rf, p_xgb))
+
+p <- df_train %>% 
+  dplyr::select(date, mercedes) %>% 
+  melt(id.vars = "date", value.name = "p", variable.name = "model") %>% 
+  dplyr::bind_rows(., predictions) %>% 
+  ggplot(., aes(x = date, y = p, color = model, shape = model)) + 
+    geom_line() + 
+    geom_point() +
+    scale_color_manual("", labels = c("MB actuals",
+                                      "Random Forest",
+                                      "VAR",
+                                      "XGBoost"),
+                       values = c(col_palette[1], col_palette[2], 
+                                  col_palette[3], col_palette[4])) + 
+    scale_shape_manual("", labels = c("MB actuals",
+                                      "Random Forest",
+                                      "VAR",
+                                      "XGBoost"),
+                       values = c(20, 4, 4, 4)) + 
+    labs(x = "Date", y = "Sale", title = "Forecast for New Car Sales in June 2017") + 
+    theme_minimal()
+
+ggplotly(p, tooltip = c("colour", "x", "y"))
+```
+
+
 
 # Model Explanation
 
@@ -140,12 +198,16 @@ explainer_rf <- DALEX::explain(model = mod_rf,
                                y = df_train$mercedes,
                                predict_function = function(model, newdata) {
                                  predict.train(model, newdata = newdata)
-                               })
+                                 },
+                               label = "Random Forest"
+                               )
 
 # DALEX explainer for XGBoost model
 explainer_xgb <- DALEX::explain(model = mod_xgb,
                                 data = X_train,
-                                y = df_train$mercedes)
+                                y = df_train$mercedes,
+                                predict_function = predict_xgb,
+                                label = "XGBoost")
 
 # Explainer for VAR model
 
@@ -154,27 +216,334 @@ mod_var_1 <- mod_var$varresult$mercedes
 mod_var_2 <- mod_var$varresult$bmw
 
 # Extract training and explaining data.frames from varest obj
-X_train <- mod_var$datamat
-X_plain <- create_Z_varest(mod_var)
+X_train_var <- mod_var$datamat[, -c(1, 2)]
+y_train_mb_var <- mod_var$datamat[, "mercedes"]
+y_train_bmw_var <- mod_var$datamat[, "bmw"]
+X_plain_var <- create_Z_varest(mod_var)
 
 # Explainer for VAR equation 1
 explainer_var_1 <- DALEX::explain(model = mod_var_1,
-                                  data = X_train,
-                                  predict_function = predict.lm)
+                                  data = X_train_var,
+                                  y = y_train_mb_var,
+                                  predict_function = predict.lm,
+                                  label = "VAR")
 
 # Explainer for VAR equation 2
 explainer_var_2 <- DALEX::explain(model = mod_var_2,
-                                  data = X_train,
-                                  predict_function = predict.lm)
+                                  data = X_train_var,
+                                  y = y_train_bmw_var,
+                                  predict_function = predict.lm,
+                                  label = "VAR")
 
 ```
 
 
-## Global Model Explanation
+## Global Model Explanation {.tabset}
 
-## Local Model Explanation
+### Feature Importance by Drop-out Importance 
+
+<br>
+**Idea:**  
+
+> Measure how much the model fit will decrease if a selected feature or group of features will be cancelled out.
+> Cancelation can be achived by random feature permutation.   
 
 
+Given fitted model $f(x)$ with feature set $X$ and loss function $L(f(x), y)$, do for every feature $x_i \in X$:   
+
+1. create data with permuated feature $x^{*,-i}$   
+2. calculate model predictions $f(x^{*,-i})$   
+3. calculate permuate model loss $L^{*,-i} = L(f(x^{*,-i}), y)$   
+4. calculate feature importance $vip(x_i) = L^{*,-i} - L$, were $L$ is the original loss without permuatation   
+
+
+```{r Feature Importance, fig.height=12}
+fi_var <- feature_importance(explainer_var_1,
+                             loss_function = mape)
+
+fi_rf <- feature_importance(explainer_rf,
+                            loss_function = mape)
+
+fi_xgb <- feature_importance(explainer_xgb,
+                             loss_function = mape)
+
+# Visualize and adjust standard plot
+p <- list(fi_var, fi_rf, fi_xgb) %>% 
+  purrr::map(as.data.frame) %>% 
+  dplyr::bind_rows() %>% 
+  dplyr::filter(!(variable %in% c("_full_model_", "_baseline_"))) %>% 
+  ggplot(., aes(x = variable, y = dropout_loss, fill = label)) + 
+    geom_bar(stat = "identity") + 
+    scale_fill_manual(values = c(col_palette[1], col_palette[2], col_palette[3])) + 
+    coord_flip() + 
+    labs(y = "Loss-drop (MAPE) after permutation", x = "",
+         title = "Model-Agnostic Feature Importance") + 
+    facet_wrap(~ label, ncol = 1) + 
+    theme_minimal() + 
+    theme(legend.position = "none")
+
+ggplotly(p)
+```
+
+### Global Feature Effects
+
+<br>
+**Idea:**  
+
+> Show how the expected model response behaves as a function of a selected feature.
+
+
+Frist calculate the so called ceteris paribus (CP) profile $h()$ for the $j$th:   
+
+$$h^{f,j}_{x*}(z) = f(x_{*}^{j|=z})$$
+
+hence, the prediction of model $f$ for a range of particular values $z$ of the $j$-th variable.
+
+In order to calculate the partial dependency profile (PDP), one can take the average of all CP profiles:
+
+$$\hat{g}^{f,j}_{PD}(z) = \frac{1}{n}\sum^{N}_{i=10}{f(x_{i}^{j|=z})}$$
+
+Or in other words, calculate a CP profile for every observation $i$ in the data and average all CP profiles.
+
+
+```{r Ceteris Paribus Profile & Partial Depdendency Plot}
+
+# Ceteris paribus plots
+cp_rf <- ceteris_paribus(explainer_rf, new_observation = X_train, variables = c("mercedes.l1", "bmw.l1"))
+cp_var <- ceteris_paribus(explainer_var_1, new_observation = X_train, variables = c("mercedes.l1", "bmw.l1"))
+cp_xgb <- ceteris_paribus(explainer_xgb, new_observation = X_train, variables = c("mercedes.l1", "bmw.l1"))
+
+# Partial depdendenc plots
+pdp_rf <- aggregate_profiles(cp_rf, type = "partial")
+pdp_var <- aggregate_profiles(cp_var, type = "partial")
+pdp_xgb <- aggregate_profiles(cp_xgb, type = "partial")
+
+p <- plot(pdp_rf, pdp_var, pdp_xgb) + 
+  theme_minimal() + 
+  scale_color_manual("Model",
+                     values = c(col_palette[1], col_palette[2], col_palette[3])) + 
+  labs(x = "Feature Value", y = "Average Prediction",
+       "Partial Dependency Plots for Selected Features")
+
+ggplotly(p)
+
+```
+
+<br>
+**Problem:**  
+
+> Ceteris Paribus Plots and thus Partial Dependency Plots, use the expeced value over the marginal distribution of $X^{-j}$.
+> In the present of high correlation between the features in $X$, this might lead bias estimates.
+
+```{r Correlation}
+p <- df_train %>% 
+  dplyr::select_if(is.numeric) %>% 
+  cor(use = "pairwise.complete.obs") %>% 
+  melt() %>% 
+  ggplot(aes(x = Var1, y = Var2, fill = value)) + 
+    geom_tile() + 
+    labs(x = "", y = "",
+         title = "Correlation among Features") + 
+    scale_fill_gradient("Correlation", low = col_palette[2], high = col_palette[1]) + 
+    theme_minimal()
+
+ggplotly(p)
+```
+
+<br>
+**Solution:**  
+
+> Therefore, Apley (2018) suggested to use instead of the marginal distrubiton the expeced value over the conditional distribution $(X^j, X^{-j}|X^j=z)$.
+
+
+```{r Accumulated Local Effects}
+ale_rf <- ingredients::aggregate_profiles(cp_rf, type = "accumulated")
+ale_var <- ingredients::aggregate_profiles(cp_var, type = "accumulated")
+ale_xgb <- ingredients::aggregate_profiles(cp_xgb, type = "accumulated")
+
+p <- plot(ale_rf, ale_var, ale_xgb) + 
+  theme_minimal() + 
+  scale_color_manual("Model",
+                     values = c(col_palette[1], col_palette[2], col_palette[3])) + 
+  labs(x = "Feature Value", y = "Average Prediction",
+       title = "Accumulated Local Effects for Selected Features")
+
+ggplotly(p)
+```
+
+### Global Model Drift
+
+<br>
+**Idea:**  
+
+> Analyse how the relationship between target variable and input $p(y|X)$ change for new data.
+
+To calculate a drift score for each variable, one can calculate the $L_2$ distance between the PDPs of both models:
+
+$$drift_i = \frac{1}{|Z_i|}\int_{z\in Z_i}{(PDP_i(f_{old}) - PDP_i(f_{new}))^2dz}$$
+
+```{r Viz Old and New Data}
+# Visualize old and new data
+df %>% 
+  dplyr::select(date, mercedes) %>% 
+  ggplot(aes(x = date, y = mercedes)) + 
+    geom_line(color = col_palette[1]) + 
+    geom_point(point = col_palette[1]) + 
+    annotate("rect", 
+             xmin = min(df$date), xmax = ymd("2014-12-01"),
+             ymin = -Inf, ymax = Inf,
+             alpha = 0.1,
+             fill = col_palette[2]) + 
+    annotate("rect", 
+             xmin = ymd("2015-01-01"), xmax = max(df$date),
+             ymin = -Inf, ymax = Inf,
+             alpha = 0.3,
+             fill = col_palette[2]) + 
+    theme_minimal() + 
+    labs(x = "Date", y = "Sales", title = "New Car Sales in Norway since 2007") + 
+    theme(legend.position = "bottom")
+```
+
+**Model Drift for VAR Model (before 2015 and entire data)**
+
+```{r Model Drift}
+# Train model with "old" data
+mod_var_old <- df_train %>% 
+  dplyr::filter(date < ymd("2015-01-01")) %>% 
+  dplyr::select(mercedes, bmw) %>% 
+  vars::VAR(y = ., 
+            p = 3,
+            type = "trend",
+            season = 4)
+
+# Train model on "full" data
+mod_var_new <- df_train %>% 
+  dplyr::select(mercedes, bmw) %>% 
+  vars::VAR(y = ., 
+            p = 3,
+            type = "trend",
+            season = 4)
+
+# Extract models
+mod_var_old <- mod_var_old$varresult$mercedes
+mod_var_new <- mod_var_new$varresult$mercedes
+
+# Calculate model drift based on PDP
+calculate_model_drift(model_old = mod_var_old, 
+                      model_new = mod_var_new,
+                      data_new = df_train,
+                      y_new = df_train$mercedes,
+                      predict_function = predict.lm)
+```
+
+## Local Model Explanation {.tabset}
+
+### Breakdown Plot (Variable Attribution with Interaction)
+
+```{r Breakdown Plots}
+
+# Variable Attribution including Interactions 
+bd_rf <- iBreakDown::break_down(explainer_rf,
+                                new_observation = X_plain,
+                                interactions = TRUE)
+
+bd_var <- iBreakDown::break_down(explainer_var_1,
+                                 new_observation = X_plain_var,
+                                 interactions = TRUE)
+
+bd_xgb <- iBreakDown::break_down(explainer_xgb,
+                                 new_observation = X_plain,
+                                 interactions = TRUE)
+
+cols <- c(`-1` = "firebrick4",
+          `0` = col_palette[3],
+          `1` = col_palette[4],
+           X = col_palette[1])
+
+p1 <- plot(bd_rf, vcolors = cols) + 
+  guides(fill = "none") + 
+  theme_minimal()
+
+p2 <- plot(bd_var, vcolors = cols) + 
+  guides(fill = "none") + 
+  theme_minimal()
+
+p3 <- plot(bd_xgb, vcolors = cols) + 
+  guides(fill = "none") + 
+  theme_minimal()
+
+grid.arrange(p1, p2, p3)
+```
+
+
+### Local Feature Importance (LIME)
+
+```{r LIME}
+lime_var <- Predictor$new(mod_var_1, 
+                          data = X_train, 
+                          y = df_train$mercedes,
+                          predict.fun = predict.lm) %>% 
+  LocalModel$new(., x.interest = X_plain_var)
+
+lime_rf <- Predictor$new(mod_rf, 
+                         data = X_train, 
+                         y = df_train$mercedes,
+                         predict.train) %>% 
+  LocalModel$new(., x.interest = X_plain)
+
+lime_xgb <- Predictor$new(mod_xgb, 
+                          data = X_train, 
+                          y = df_train$mercedes,
+                          predict.fun = predict_xgb) %>% 
+  LocalModel$new(., x.interest = X_plain)
+
+p1 <- plot(lime_var) + 
+  labs(y = "Feature Attribution", x = "", subtitle = "VAR") + 
+  theme_minimal()
+
+p2 <- plot(lime_rf) + 
+  labs(y = "Feature Attribution", x = "", subtitle = "Random Forest") + 
+  theme_minimal()
+
+p3 <- plot(lime_xgb) + 
+  labs(y = "Feature Attribution", x = "", subtitle = "XGBoost") + 
+  theme_minimal()
+
+grid.arrange(p1, p2, p3)
+```
+
+
+### Local-Fidelity Plot
+
+```{r KNN Neighbors}
+# knn-algorithm for neighbours based on BMW 
+neighbors_test <- select_neighbours(df_mod, 
+                                    df_test, 
+                                    n = 25, 
+                                    variables = c("bmw.l1", "sd1", "sd2", "sd3"))
+```
+
+
+```{r Local-Fidelity Plot}
+# Generate ceteris paribus profile for test data
+cp_xgb_test <- ceteris_paribus(explainer_xgb, 
+                               new_observation = X_plain, 
+                               y = df_test$mercedes,
+                               variables = c("mercedes.l1"))
+
+# Generate ceteris paribus profile for neighbors of test data
+cp_xgb_neighbors <- ceteris_paribus(explainer_xgb, 
+                                    new_observation = neighbors_test, 
+                                    variables = c("mercedes.l1"))
+
+p <- plot(cp_xgb_neighbors, color = '#ceced9') + 
+  show_observations(cp_xgb_test, variables = "mercedes.l1", size = 5, color = col_palette[2]) + 
+  labs(x = "Value of Mercedes Lag 1", y = "Prediction", 
+       title = "Local-Fidelity Plot for Test Data with 25 Nearest Neighbours") + 
+  theme_minimal()
+
+ggplotly(p)
+```
 
 
 
