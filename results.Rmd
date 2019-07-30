@@ -106,6 +106,7 @@ glimpse(df_train)
 
 # Model Training
 
+**Vector Autoregression Model** via `vars::VAR()`
 ```{r Train VAR}
 # Model formula
 form <- mercedes ~ mercedes.l1 + mercedes.l2 + mercedes.l3 + 
@@ -122,7 +123,7 @@ mod_var <- vars::VAR(y = df_train[, c("mercedes", "bmw")],
 mod_var
 ```
 
-
+**Random Forest** via `caret::train()`
 ```{r Model Train RF}
 # Train Random Forest via caret
 mod_rf <- caret::train(form = form,
@@ -133,7 +134,7 @@ mod_rf <- caret::train(form = form,
 mod_rf
 ```
 
-
+**XGBoost Model** via `xgboost::xgb.train()`
 ```{r Model Train XGB}
 # Train XGBoost
 mod_xgb <- train_xgb(form = form,
@@ -440,7 +441,7 @@ calculate_model_drift(model_old = mod_var_old,
 
 ### Breakdown Plot (Variable Attribution with Interaction)
 
-```{r Breakdown Plots}
+```{r Breakdown Plots, fig.height=15}
 
 # Variable Attribution including Interactions 
 bd_rf <- iBreakDown::break_down(explainer_rf,
@@ -478,7 +479,7 @@ grid.arrange(p1, p2, p3)
 
 ### Local Feature Importance (LIME)
 
-```{r LIME}
+```{r LIME, fig.height=15}
 lime_var <- Predictor$new(mod_var_1, 
                           data = X_train, 
                           y = df_train$mercedes,
