@@ -1,7 +1,7 @@
 # Showcase of Forecasting Explainability
 
 Simple showcase for using model agnostic machine learning explainability methods in R.   
-Results can be find in this (html file)[https://github.com/fabianmax/Forecasting-XAI/blob/master/results.html].
+Results can be find in this [html file](https://github.com/fabianmax/Forecasting-XAI/blob/master/results.html).
 
 ## Data
 
